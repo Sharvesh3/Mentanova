@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
 import google.generativeai as genai
-genai.configure(api_key="AIzaSyBPKpoPP-oOOJjddWIIVgb9i_u51X_Sqso")
+genai.configure(api_key="YOUR_API_KEY") # This part is what I have updated in the currently working code file
 
 for model in genai.list_models():
     if 'generateContent' in model.supported_generation_methods:
