@@ -174,17 +174,21 @@ Use natural language, be warm and helpful."""
         context: str,
         sources: List[Dict[str, Any]],
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        reformulated_query: Optional[str] = None,
+        conversation_context: Optional[Dict[str, Any]] = None,
         is_conversational: bool = False
     ) -> Dict[str, Any]:
         """
-        Generate answer using Gemini with retrieved context.
-        Now handles both document-based and conversational queries.
+        Generate answer using Gemini with context awareness.
+        Enhanced to handle conversational flow and document scoping.
         
         Args:
-            query: User's question
+            query: User's original question
             context: Retrieved context (can be empty for conversational)
             sources: Source documents
             conversation_history: Previous messages
+            reformulated_query: Query enhanced with context (optional)
+            conversation_context: Summary of conversation state
             is_conversational: If True, focus on natural conversation
             
         Returns:
@@ -192,31 +196,27 @@ Use natural language, be warm and helpful."""
         """
         logger.info(f"Generating answer: conversational={is_conversational}, sources={len(sources)}")
         
-        # Build prompt based on query type
+        # Build context-aware prompt
         if is_conversational or not context or len(context.strip()) < 50:
             # Conversational mode - no strong document context
-            user_prompt = f"""Question: {query}
-
-Note: No specific document context is available for this query.
-
-Please respond naturally and conversationally. If this is a greeting or general question, respond appropriately. If the user is asking about documents but no context is available, guide them helpfully on what you can assist with.
-
-Use proper markdown formatting:
-- **Bold** for important points
-- Bullet points for lists
-- Clear paragraphs for readability"""
+            user_prompt = self._build_conversational_prompt(
+                query, conversation_history, conversation_context
+            )
         else:
-            # Document-based mode
-            user_prompt = self._build_prompt(query, context, sources)
+            # Document-based mode with context awareness
+            user_prompt = self._build_contextual_prompt(
+                query, context, sources, reformulated_query, conversation_context
+            )
         
         # Build messages
         messages = []
         
-        # System instruction
-        messages.append({"role": "user", "parts": [self.system_instruction]})
-        messages.append({"role": "model", "parts": ["Understood. I'll provide accurate, well-formatted responses with proper citations when using documents."]})
+        # Enhanced system instruction
+        system_instruction = self._get_context_aware_system_instruction(conversation_context)
+        messages.append({"role": "user", "parts": [system_instruction]})
+        messages.append({"role": "model", "parts": ["Understood. I'll provide accurate, context-aware responses with proper citations."]})
         
-        # Add history
+        # Add conversation history (last 6 messages for better context)
         if conversation_history:
             for msg in conversation_history[-6:]:
                 role = "model" if msg["role"] == "assistant" else "user"
@@ -241,7 +241,7 @@ Use proper markdown formatting:
             
             answer = response.text
             citations = self._extract_citations(answer, sources)
-            confidence = self._assess_confidence(answer, context)
+            confidence = self._assess_confidence(answer, context, conversation_context)
             
             usage = {
                 'prompt_tokens': response.usage_metadata.prompt_token_count if hasattr(response, 'usage_metadata') else 0,
@@ -263,159 +263,238 @@ Use proper markdown formatting:
             logger.error(f"Generation failed: {str(e)}")
             raise
     
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10)
-    )
-    async def generate_answer_stream(
+    def _get_context_aware_system_instruction(
         self,
-        query: str,
-        context: str,
-        sources: List[Dict[str, Any]],
-        conversation_history: Optional[List[Dict[str, str]]] = None
-    ) -> AsyncGenerator[str, None]:
+        conversation_context: Optional[Dict[str, Any]] = None
+    ) -> str:
         """
-        Generate answer with streaming for real-time display.
+        Get system instruction based on conversation context.
         
         Args:
-            query: User's question
-            context: Retrieved context
-            sources: Source documents
-            conversation_history: Previous messages
+            conversation_context: Current conversation state
             
-        Yields:
-            Chunks of the generated answer
+        Returns:
+            Context-aware system instruction
         """
-        logger.info(f"Streaming answer for query: '{query[:50]}...'")
+        base_instruction = """You are Mentanova, a helpful AI assistant specializing in Finance and HRMS documentation.
+
+Your role is to provide accurate, conversational answers based on the provided context and conversation history.
+
+Core Guidelines:
+1. **Context Awareness**: Pay attention to the conversation history and maintain context across messages
+2. **Document Scoping**: When discussing a specific document, stay focused on that document unless explicitly asked to look elsewhere
+3. **Natural Conversation**: Respond naturally like ChatGPT - be conversational while staying accurate
+4. **Source Attribution**: Always cite sources for factual information using [Document: X, Page: Y] format
+5. **Clarification**: If information is not in the context, say so clearly and offer alternatives
+6. **Follow-ups**: Handle follow-up questions by referring back to previous context
+
+Response Guidelines:
+- Use natural, conversational language
+- Structure responses clearly with paragraphs, bullet points, and bold text
+- For financial data: Always include exact figures and sources
+- For follow-up questions: Reference previous answers when relevant
+- Be concise but thorough
+"""
         
-        # Build prompt
-        user_prompt = self._build_prompt(query, context, sources)
-        
-        # Build chat messages
-        messages = []
-        
-        messages.append({
-            "role": "user",
-            "parts": [self.system_instruction]
-        })
-        messages.append({
-            "role": "model",
-            "parts": ["Understood. I'll follow these rules strictly."]
-        })
-        
-        if conversation_history:
-            for msg in conversation_history[-6:]:
-                role = "model" if msg["role"] == "assistant" else "user"
-                messages.append({
-                    "role": role,
-                    "parts": [msg["content"]]
-                })
-        
-        messages.append({
-            "role": "user",
-            "parts": [user_prompt]
-        })
-        
-        try:
-            # Stream response
-            loop = asyncio.get_event_loop()
+        # Add context-specific instructions
+        if conversation_context:
+            primary_doc = conversation_context.get('primary_document')
+            time_period = conversation_context.get('recent_time_period')
             
-            response_stream = await loop.run_in_executor(
-                None,
-                lambda: self.model.generate_content(
-                    messages,
-                    stream=True,
-                    generation_config={
-                        "temperature": self.temperature,
-                        "max_output_tokens": settings.max_response_tokens,
-                    }
-                )
-            )
+            if primary_doc:
+                base_instruction += f"""
+**Current Context**:
+- Primary Document: {primary_doc}
+- When answering follow-up questions, prioritize information from this document unless asked otherwise
+"""
             
-            for chunk in response_stream:
-                if chunk.text:
-                    yield chunk.text
-            
-            logger.info("✅ Streaming completed")
-            
-        except Exception as e:
-            logger.error(f"Streaming failed: {str(e)}")
-            raise
-    
-    def _build_prompt(
-        self,
-        query: str,
-        context: str,
-        sources: List[Dict[str, Any]]
-    ) -> str:
-        """Build the complete prompt with query and context."""
-        # Format sources for reference
-        sources_text = "\n".join([
-            f"- {src['document']}, Page {src.get('page', 'N/A')}" + 
-            (f", Section: {src['section']}" if src.get('section') else "")
-            for src in sources
-        ])
+            if time_period:
+                base_instruction += f"- Time Period in Focus: {time_period}\n"
         
-        prompt = f"""Question: {query}
-
-Available Context from Documents:
-{context}
-
-Source Documents Referenced:
-{sources_text}
-
-Instructions:
-1. Answer the question using ONLY the information from the context above
-2. Cite specific sources in your answer using format: [Document: X, Page: Y]
-3. If the context doesn't contain enough information, clearly state what's missing
-4. For financial data, include the exact figures and their source
-5. Be precise and avoid speculation
-
-Formatting:
-- Use **bold** for important points
-- Use bullet points for lists
-- Use clear paragraphs
-- Use markdown formatting
-
-Answer:"""
-        
-        return prompt
+        return base_instruction
     
     def _extract_citations(
         self,
         answer: str,
         sources: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Extract citation references from the generated answer."""
+        """
+        Extract citation references from the answer text.
+        
+        Args:
+            answer: Generated answer text
+            sources: List of source documents
+            
+        Returns:
+            List of citation dictionaries with document and page info
+        """
         import re
         
         citations = []
         
         # Pattern to match [Document: X, Page: Y] format
-        citation_pattern = r'\[Document:\s*([^,]+),\s*Page:\s*(\d+)\]'
+        citation_pattern = r'\[Document:\s*([^,]+),\s*Page:\s*(\d+|N/A)\]'
         
-        for match in re.finditer(citation_pattern, answer):
-            doc_name = match.group(1).strip()
-            page_num = int(match.group(2))
+        matches = re.findall(citation_pattern, answer, re.IGNORECASE)
+        
+        for doc_name, page in matches:
+            doc_name = doc_name.strip()
             
             # Find matching source
+            matching_source = None
             for source in sources:
-                if (source['document'].lower() in doc_name.lower() or 
-                    doc_name.lower() in source['document'].lower()) and \
-                   source.get('page') == page_num:
-                    
-                    citations.append({
-                        'document': source['document'],
-                        'page': page_num,
-                        'chunk_id': source.get('chunk_id'),
-                        'position': match.start()
-                    })
+                source_doc = source.get('document', '')
+                if doc_name.lower() in source_doc.lower() or source_doc.lower() in doc_name.lower():
+                    matching_source = source
                     break
+            
+            citation = {
+                'document': doc_name,
+                'page': int(page) if page.isdigit() else None,
+                'text_reference': f"[Document: {doc_name}, Page: {page}]"
+            }
+            
+            if matching_source:
+                citation['chunk_id'] = matching_source.get('chunk_id')
+                citation['section'] = matching_source.get('section')
+            
+            citations.append(citation)
         
-        return citations
+        # Deduplicate citations
+        seen = set()
+        unique_citations = []
+        for citation in citations:
+            key = (citation['document'], citation['page'])
+            if key not in seen:
+                seen.add(key)
+                unique_citations.append(citation)
+        
+        logger.debug(f"Extracted {len(unique_citations)} unique citations from answer")
     
-    def _assess_confidence(self, answer: str, context: str) -> str:
-        """Assess confidence level of the answer."""
+        return unique_citations
+
+    def _build_contextual_prompt(
+        self,
+        query: str,
+        context: str,
+        sources: List[Dict[str, Any]],
+        reformulated_query: Optional[str] = None,
+        conversation_context: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Build context-aware prompt for document-based queries.
+        
+        Args:
+            query: Original user query
+            context: Retrieved document context
+            sources: Source documents
+            reformulated_query: Enhanced query with context
+            conversation_context: Conversation state
+            
+        Returns:
+            Formatted prompt
+        """
+        # Format sources
+        sources_text = "\n".join([
+            f"- {src['document']}, Page {src.get('page', 'N/A')}" + 
+            (f", Section: {src['section']}" if src.get('section') else "")
+            for src in sources
+        ])
+        
+        prompt_parts = []
+        
+        # Add conversation context if available
+        if conversation_context:
+            primary_doc = conversation_context.get('primary_document')
+            if primary_doc:
+                prompt_parts.append(f"**Context**: We are currently discussing '{primary_doc}'")
+        
+        # Show both original and reformulated query if different
+        if reformulated_query and reformulated_query != query:
+            prompt_parts.append(f"**User's Question**: {query}")
+            prompt_parts.append(f"**Interpreted as**: {reformulated_query}")
+        else:
+            prompt_parts.append(f"**Question**: {query}")
+        
+        prompt_parts.append(f"""
+**Available Context from Documents**:
+{context}
+
+**Source Documents**:
+{sources_text}
+
+**Instructions**:
+1. Answer based ONLY on the context above
+2. If this is a follow-up question, connect it to previous context
+3. Cite sources using format: [Document: X, Page: Y]
+4. If context is insufficient, clearly state what's missing
+5. For financial data, include exact figures and sources
+6. Be conversational and natural in your response
+
+**Formatting**:
+- Use **bold** for important points
+- Use bullet points for lists
+- Use clear paragraphs
+- Use markdown formatting
+
+**Answer**:""")
+        
+        return "\n\n".join(prompt_parts)
+    
+    def _build_conversational_prompt(
+        self,
+        query: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        conversation_context: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Build prompt for conversational queries (no document context).
+        
+        Args:
+            query: User query
+            conversation_history: Recent messages
+            conversation_context: Conversation state
+            
+        Returns:
+            Conversational prompt
+        """
+        prompt_parts = [f"**User**: {query}"]
+        
+        # Add context hints
+        if conversation_context:
+            message_count = conversation_context.get('message_count', 0)
+            if message_count > 0:
+                prompt_parts.append("\n**Context**: This is part of an ongoing conversation.")
+        
+        prompt_parts.append("""
+**Instructions**:
+- Respond naturally and conversationally
+- If this is a greeting or small talk, respond warmly
+- If the user is asking about documents but no context is available, guide them helpfully
+- Use proper markdown formatting
+- Be friendly and professional
+
+**Response**:""")
+        
+        return "\n".join(prompt_parts)
+    
+    def _assess_confidence(
+        self,
+        answer: str,
+        context: str,
+        conversation_context: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Assess confidence level with context awareness.
+        
+        Args:
+            answer: Generated answer
+            context: Document context used
+            conversation_context: Conversation state
+            
+        Returns:
+            Confidence level: 'high', 'medium', 'low'
+        """
         # High confidence indicators
         high_indicators = [
             'according to', 'states that', 'specified in',
@@ -425,7 +504,7 @@ Answer:"""
         # Low confidence indicators
         low_indicators = [
             'not available', 'unclear', 'doesn\'t specify',
-            'may', 'might', 'possibly', 'appears to'
+            'may', 'might', 'possibly', 'appears to', 'i don\'t have'
         ]
         
         answer_lower = answer.lower()
@@ -435,8 +514,16 @@ Answer:"""
             return 'low'
         
         # Check for strong sourcing
-        if any(indicator in answer_lower for indicator in high_indicators):
-            if '[Document:' in answer:
+        has_citations = '[document:' in answer_lower
+        has_strong_language = any(indicator in answer_lower for indicator in high_indicators)
+        
+        if has_citations and has_strong_language:
+            return 'high'
+        
+        # Context-based confidence
+        if conversation_context:
+            # If we're in a scoped document conversation with sources
+            if conversation_context.get('primary_document') and has_citations:
                 return 'high'
         
         return 'medium'

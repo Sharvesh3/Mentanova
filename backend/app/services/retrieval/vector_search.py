@@ -64,10 +64,11 @@ class VectorSearchService:
         top_k: Optional[int] = None,
         doc_type: Optional[str] = None,
         department: Optional[str] = None,
-        document_ids: Optional[List[UUID]] = None
+        document_ids: Optional[List[UUID]] = None,
+        document_filter: Optional[List[str]] = None  # NEW: Filter by document names
     ) -> List[Dict[str, Any]]:
         """
-        Search for chunks similar to query embedding.
+        Search for chunks similar to query embedding with document filtering.
         
         Args:
             query_embedding: Vector embedding of search query
@@ -75,7 +76,8 @@ class VectorSearchService:
             top_k: Number of results (default from config)
             doc_type: Filter by document type
             department: Filter by department
-            document_ids: Filter by specific documents
+            document_ids: Filter by specific document IDs
+            document_filter: Filter by document names (NEW)
             
         Returns:
             List of chunk dictionaries with similarity scores
@@ -86,8 +88,6 @@ class VectorSearchService:
         
         try:
             # Build the query with vector similarity
-            # Note: pgvector uses <=> for cosine distance (lower is better)
-            # We convert to similarity: similarity = 1 - distance
             query = (
                 select(
                     Chunk,
@@ -108,11 +108,22 @@ class VectorSearchService:
             if document_ids:
                 query = query.where(Document.id.in_(document_ids))
             
+            # NEW: Filter by document names
+            if document_filter:
+                # Use OR condition to match any of the document names
+                from sqlalchemy import or_
+                doc_conditions = [
+                    Document.filename.ilike(f'%{doc_name}%')
+                    for doc_name in document_filter
+                ]
+                query = query.where(or_(*doc_conditions))
+                logger.info(f"  Filtering to documents matching: {document_filter}")
+            
             # Order by similarity and limit
             query = (
                 query
                 .order_by(text('similarity DESC'))
-                .limit(k * 2)  # Get extra for filtering
+                .limit(k * 2)
             )
             
             # Execute query
@@ -122,11 +133,9 @@ class VectorSearchService:
             # Format results
             chunks = []
             for chunk, document, similarity in rows:
-                # Filter by similarity threshold
                 if similarity < self.similarity_threshold:
                     continue
                 
-                # ✅ FIXED: Safely extract metadata
                 chunk_metadata = self._safe_extract_metadata(chunk.chunk_metadata)
                 doc_metadata = self._safe_extract_metadata(document.doc_metadata)
                 
@@ -147,7 +156,7 @@ class VectorSearchService:
                         'document_title': document.filename,
                         'doc_type': document.doc_type,
                         'department': document.department,
-                        **chunk_metadata,  # Now safe to unpack
+                        **chunk_metadata,
                     }
                 }
                 
@@ -155,7 +164,6 @@ class VectorSearchService:
             
             logger.info(f"Vector search found {len(chunks)} chunks above threshold {self.similarity_threshold}")
             
-            # Return top_k results
             return chunks[:k]
             
         except Exception as e:

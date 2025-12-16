@@ -7,7 +7,6 @@ import re
 from datetime import datetime
 from loguru import logger
 
-
 class QueryProcessor:
     """
     Processes and enhances user queries for better retrieval.
@@ -269,6 +268,113 @@ class QueryProcessor:
         
         return has_many_entities or has_quotes
 
+    def reformulate_with_context(
+        self,
+        query: str,
+        conversation_context: Optional['ConversationContext'] = None
+    ) -> str:
+        """
+        Reformulate query using conversation context.
+        
+        Args:
+            query: Original query
+            conversation_context: Context from conversation
+            
+        Returns:
+            Reformulated query
+        """
+        if not conversation_context:
+            return query
+        
+        query_lower = query.lower().strip()
+        
+        # Detect if query is a follow-up (short, pronoun-heavy, incomplete)
+        is_followup = self._is_followup_query(query_lower)
+        
+        if not is_followup:
+            return query
+        
+        # Enhance with context
+        enhanced_query = conversation_context.enhance_query_with_context(query)
+        
+        # Resolve coreferences
+        resolved_query = self._resolve_coreferences(
+            enhanced_query,
+            conversation_context
+        )
+        
+        logger.info(f"Reformulated: '{query}' -> '{resolved_query}'")
+        
+        return resolved_query
+    
+    def _is_followup_query(self, query: str) -> bool:
+        """
+        Detect if query is a follow-up question.
+        
+        Indicators:
+        - Short length (< 5 words)
+        - Contains pronouns (it, that, this, those)
+        - Starts with "what about", "how about", "and"
+        - No proper nouns or specific entities
+        """
+        words = query.split()
+        
+        # Very short queries
+        if len(words) <= 4:
+            # Check for follow-up patterns
+            followup_patterns = [
+                r'^(what|how)\s+about',
+                r'^and\s+(what|how|the)',
+                r'\b(it|that|this|those|them)\b',
+                r'^(also|additionally)',
+            ]
+            
+            for pattern in followup_patterns:
+                if re.search(pattern, query):
+                    return True
+        
+        # Check for vague references
+        vague_words = ['it', 'that', 'this', 'those', 'them', 'same', 'previous']
+        if any(word in words for word in vague_words):
+            return True
+        
+        return False
+    
+    def _resolve_coreferences(
+        self,
+        query: str,
+        context: 'ConversationContext'
+    ) -> str:
+        """
+        Resolve pronouns and references using context.
+        
+        Examples:
+        - "What about it?" -> "What about Q4 revenue in Annual_Report_2023?"
+        - "And expenses?" -> "And expenses for Q4 2024?"
+        """
+        resolved = query
+        
+        # Replace "it" with last entity or topic
+        if re.search(r'\bit\b', resolved, re.IGNORECASE):
+            if context.entities:
+                # Get most recent non-time entity
+                for entity_type in ['amount', 'financial']:
+                    if entity_type in context.entities and context.entities[entity_type]:
+                        last_entity = context.entities[entity_type][-1]
+                        resolved = re.sub(r'\bit\b', last_entity, resolved, flags=re.IGNORECASE)
+                        break
+        
+        # Replace "that" with primary document or time period
+        if re.search(r'\bthat\b', resolved, re.IGNORECASE):
+            if context.last_time_reference:
+                resolved = re.sub(
+                    r'\bthat\b',
+                    context.last_time_reference,
+                    resolved,
+                    flags=re.IGNORECASE
+                )
+        
+        return resolved
 
 # Global instance
 query_processor = QueryProcessor()

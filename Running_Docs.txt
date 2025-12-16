@@ -106,3 +106,34 @@ text
        email         | role
 ---------------------+-------
  admin@mentanova.com | admin
+
+
+
+
+
+
+
+
+ /////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+mentanova_backend  |  LIMIT $8::INTEGER
+mentanova_backend  | 2025-12-15 15:37:58,314 INFO sqlalchemy.engine.Engine [generated in 0.00057s] ('english', 'english', 'What is this document about?', 'completed', 'english', 'english', 'What is this document about?', 8)
+mentanova_backend  | 2025-12-15 15:37:58 | INFO     | app.services.retrieval.keyword_search:search_keywords:114 - Keyword search found 0 matching chunks
+mentanova_backend  | 2025-12-15 15:37:58 | INFO     | app.services.retrieval.hybrid_search:search:117 - Keyword search returned 0 results
+mentanova_backend  | 2025-12-15 15:37:58 | INFO     | app.services.retrieval.hybrid_search:search:120 - Fusing results...
+mentanova_backend  | 2025-12-15 15:37:58 | INFO     | app.services.retrieval.hybrid_search:search:130 - Hybrid search completed: 0 final results
+mentanova_backend  | 2025-12-15 15:37:58 | INFO     | app.services.retrieval.hybrid_search:search_with_context_expansion:270 - Context expansion: 0 → 0 chunks 
+mentanova_backend  | 2025-12-15 15:37:58 | INFO     | app.services.retrieval.pipeline:retrieve:119 -   Retrieved 0 chunks
+mentanova_backend  | 2025-12-15 15:37:58 | INFO     | app.services.retrieval.pipeline:retrieve:133 - Step 4: Skipping reranking
+mentanova_backend  | 2025-12-15 15:37:58 | INFO     | app.services.retrieval.pipeline:retrieve:137 - Step 5: Assembling context...
+mentanova_backend  | 2025-12-15 15:37:58 | WARNING  | app.services.retrieval.pipeline:_assemble_context:271 - No chunks to assemble context from
+mentanova_backend  | 2025-12-15 15:37:58 | INFO     | app.services.retrieval.pipeline:retrieve:143 - ✅ Retrieval complete: 0 chunks, 0 tokens
+mentanova_backend  | 2025-12-15 15:37:58 | INFO     | app.services.generation.chat_service:chat:172 - Retrieved 0 chunks
+mentanova_backend  | 2025-12-15 15:37:58 | INFO     | app.services.generation.llm_service:generate_answer:197 - Generating answer: conversational=False, sources=0
+mentanova_backend  | 2025-12-15 15:38:01 | ERROR    | app.services.generation.llm_service:generate_answer:263 - Generation failed: 'LLMService' object has no attribute '_extract_citations'
+mentanova_backend  | 2025-12-15 15:38:03 | INFO     | app.services.generation.llm_service:generate_answer:197 - Generating answer: conversational=False, sources=0
+mentanova_backend  | 2025-12-15 15:38:05 | ERROR    | app.services.generation.llm_service:generate_answer:263 - Generation failed: 'LLMService' object has no attribute '_extract_citations'
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

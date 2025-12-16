@@ -11,6 +11,9 @@ from app.services.retrieval.pipeline import retrieval_pipeline
 from app.services.generation.llm_service import llm_service
 from app.services.generation.guardrails import guardrails_service
 from app.services.generation.conversation_manager import conversation_manager
+from app.services.generation.context_manager import context_manager
+from app.services.retrieval.query_processor import query_processor
+from app.services.generation.suggestion_service import suggestion_service 
 
 
 class ChatService:
@@ -80,8 +83,12 @@ class ChatService:
         stream: bool = False
     ) -> Dict[str, Any]:
         """
-        Process chat query with intelligent document search detection.
+        Process chat query with intelligent context awareness.
+        Now includes document-scoped context and conversational continuity.
         """
+        # IMPORT at top of file
+        from app.services.generation.context_manager import context_manager
+        
         logger.info(f"📨 Chat: '{query[:50]}...' (user: {user_id})")
         
         # Step 1: Input validation (permissive)
@@ -89,7 +96,6 @@ class ChatService:
         
         if not is_valid:
             logger.warning(f"Input validation failed: {error_msg}")
-            # Return validation error as conversational response
             return await self._generate_conversational_response(
                 query, conversation_id, user_id, db, error_msg, is_error=True
             )
@@ -109,8 +115,24 @@ class ChatService:
             content=query
         )
         
-        # Step 3: Determine if we need to search documents
-        should_search = self._should_search_documents(query)
+        # Step 3: Process query with context awareness
+        processed_query = query_processor.process_query(query)
+        
+        # Step 4: Get/update conversation context
+        conv_context = context_manager.get_or_create_context(conversation_id)
+        
+        # Update context with query
+        conv_context.update_from_query(query, processed_query)
+        
+        # Step 5: Reformulate query using context (for follow-ups)
+        reformulated_query = query_processor.reformulate_with_context(
+            query, conv_context
+        )
+        
+        logger.info(f"🔄 Query reformulation: '{query}' -> '{reformulated_query}'")
+        
+        # Step 6: Determine if we need to search documents
+        should_search = self._should_search_documents(reformulated_query)
         logger.info(f"Document search: {'YES' if should_search else 'NO'}")
         
         context = ""
@@ -119,16 +141,24 @@ class ChatService:
         retrieval_metadata = {}
         
         if should_search:
-            # Step 4: Retrieve from documents
+            # Step 7: Retrieve with context-aware filtering
             try:
-                logger.info("🔍 Searching documents...")
+                logger.info("🔍 Searching documents with context...")
+                
+                # Get document filter from context
+                document_filter = conv_context.get_document_filter()
+                
+                if document_filter:
+                    logger.info(f"📄 Scoping search to documents: {document_filter}")
+                
                 retrieval_result = await retrieval_pipeline.retrieve(
-                    query=query,
+                    query=reformulated_query,  # Use reformulated query
                     db=db,
                     top_k=8,
                     doc_type=doc_type,
                     department=department,
-                    include_context=True
+                    include_context=True,
+                    conversation_context=conv_context  # Pass context
                 )
                 
                 context = retrieval_result['context_text']
@@ -136,33 +166,58 @@ class ChatService:
                 chunks_used = len(retrieval_result['chunks'])
                 retrieval_metadata = retrieval_result.get('retrieval_metadata', {})
                 
+                # Update context with retrieval results
+                conv_context.update_from_retrieval(sources)
+                
                 logger.info(f"Retrieved {chunks_used} chunks")
+                
+                # If no results and we were using document scope, try global search
+                if chunks_used == 0 and document_filter:
+                    logger.info("🌐 No results in scoped search, trying global...")
+                    retrieval_result = await retrieval_pipeline.retrieve(
+                        query=reformulated_query,
+                        db=db,
+                        top_k=8,
+                        doc_type=doc_type,
+                        department=department,
+                        include_context=True,
+                        conversation_context=None  # Global search
+                    )
+                    
+                    context = retrieval_result['context_text']
+                    sources = retrieval_result['sources']
+                    chunks_used = len(retrieval_result['chunks'])
                 
             except Exception as e:
                 logger.error(f"Retrieval failed: {str(e)}", exc_info=True)
-                # Don't fail - continue with conversational response
                 context = ""
                 sources = []
-         # Step 5: Generate AI response
+        
+        # Step 8: Generate AI response with context awareness
         generation_result = None
         answer = ""
         citations = []
         
         try:
-            history = conversation_manager.get_history(conversation_id, limit=3)
+            history = conversation_manager.get_history(conversation_id, limit=5)  # More history for context
             
             if stream:
                 return await self._chat_stream(
                     query, context, sources, history,
-                    conversation_id, retrieval_metadata
+                    conversation_id, retrieval_metadata, conv_context
                 )
             
-            # Generate answer (AI decides how to respond based on context)
+            # Add context summary to generation
+            context_summary = conv_context.get_context_summary()
+            
+            # Generate answer with context
             generation_result = await llm_service.generate_answer(
-                query=query,
+                query=query,  # Original query for natural response
+                reformulated_query=reformulated_query,  # For context
                 context=context if context else "No specific document context available.",
                 sources=sources,
                 conversation_history=history,
+                conversation_context=context_summary,
                 is_conversational=not should_search
             )
             
@@ -182,7 +237,7 @@ class ChatService:
                 'usage': {'total_tokens': 0}
             }
         
-        # Step 6: Save assistant message
+        # Step 9: Save assistant message with context
         conversation_manager.add_message(
             conversation_id=conversation_id,
             role='assistant',
@@ -192,24 +247,71 @@ class ChatService:
                 'sources': sources,
                 'tokens': generation_result.get('usage', {}) if generation_result else {},
                 'searched_documents': should_search,
-                'chunks_used': chunks_used
+                'chunks_used': chunks_used,
+                'context_used': conv_context.to_dict(),
+                'reformulated_query': reformulated_query if reformulated_query != query else None
             }
         )
         
-        # Step 7: Return response
+        # Step 10: Return response with context info
         logger.info("=" * 60)
         if sources and len(sources) > 0:
             logger.info("✅ RESPONSE SOURCE: DOCUMENTS")
-            logger.info(f"   📄 Documents used: {len(set(s['document'] for s in sources))}")
+            logger.info(f"   📄 Primary document: {conv_context.primary_document}")
             logger.info(f"   📑 Total chunks: {chunks_used}")
             logger.info(f"   📌 Citations: {len(citations)}")
-            for src in sources[:3]:
-                logger.info(f"      - {src['document']} (Page {src.get('page', 'N/A')})")
         else:
-            logger.info("🤖 RESPONSE SOURCE: API/LLM (Fallback)")
-            logger.info(f"   ⚠️  Reason: {'No documents found' if should_search else 'Conversational query'}")
+            logger.info("🤖 RESPONSE SOURCE: CONVERSATIONAL")
         logger.info("=" * 60)
-        return {
+        
+        # Generate smart suggestions with full context
+        suggestions = []
+        try:
+            suggestions = suggestion_service.generate_suggestions(
+                last_query=query,
+                last_response=answer,
+                context_summary=conv_context.get_context_summary(),
+                sources=sources,
+                processed_query=processed_query
+            )
+            
+            # Filter by confidence if needed
+            if generation_result and generation_result.get('confidence') == 'low':
+                suggestions = suggestion_service.filter_suggestions_by_confidence(
+                    suggestions,
+                    'low'
+                )
+            
+            logger.info(f"Generated {len(suggestions)} smart suggestions: {suggestions}")
+        except Exception as e:
+            logger.error(f"Suggestion generation failed: {str(e)}", exc_info=True)
+            suggestions = []
+        
+        # ✅ CRITICAL: Return statement MUST be here, OUTSIDE all try-except blocks
+        # ✅ Suggestions MUST be at top level, NOT in metadata
+        response_data = {
+            'answer': answer,
+            'conversation_id': conversation_id,
+            'sources': sources,
+            'citations': citations,
+            'confidence': generation_result.get('confidence', 'medium') if generation_result else 'low',
+            'status': 'success',
+            'suggestions': suggestions,  # ← MUST BE HERE
+            'metadata': {
+                'chunks_used': chunks_used,
+                'tokens': generation_result.get('usage', {}) if generation_result else {},
+                'searched_documents': should_search,
+                'retrieval_metadata': retrieval_metadata,
+                'context_summary': conv_context.get_context_summary(),
+                'query_reformulated': reformulated_query != query
+            }
+        }
+        
+        logger.debug(f"Returning response with suggestions: {response_data.get('suggestions')}")
+        
+        return response_data
+
+        """return {
             'answer': answer,
             'conversation_id': conversation_id,
             'sources': sources,
@@ -220,9 +322,11 @@ class ChatService:
                 'chunks_used': chunks_used,
                 'tokens': generation_result.get('usage', {}) if generation_result else {},
                 'searched_documents': should_search,
-                'retrieval_metadata': retrieval_metadata
+                'retrieval_metadata': retrieval_metadata,
+                'context_summary': conv_context.get_context_summary(),  # Include context in response
+                'query_reformulated': reformulated_query != query
             }
-        }
+        }"""
     
     async def _generate_conversational_response(
         self,

@@ -7,19 +7,12 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
-import google.generativeai as genai
-genai.configure(api_key="AIzaSyBPKpoPP-oOOJjddWIIVgb9i_u51X_Sqso")
-
-for model in genai.list_models():
-    if 'generateContent' in model.supported_generation_methods:
-        print(model.name)
-
 
 class Settings(BaseSettings):
     """Application settings with validation and type safety."""
     
     model_config = SettingsConfigDict(
-        env_file=".env.local",
+        env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="allow"
@@ -62,9 +55,9 @@ class Settings(BaseSettings):
     
     # Google Gemini Configuration
     gemini_api_key: str
-    gemini_embedding_model: str = "models/text-embedding-004"
-    gemini_embedding_dimensions: int = 768
-    gemini_chat_model: str = "models/gemini-2.0-flash"
+    gemini_embedding_model: str = "models/text-embedding-004"  
+    gemini_embedding_dimensions: int = 1536 
+    gemini_chat_model: str = "gemini-1.5-flash-002" 
     gemini_max_tokens: int = 8192
     
     # Cohere Configuration
@@ -102,7 +95,6 @@ class Settings(BaseSettings):
     # Retrieval Configuration
     retrieval_top_k: int = 20
     rerank_top_k: int = 8
-    # Search settings
     similarity_threshold: float = Field(default=0.3, env="SIMILARITY_THRESHOLD")
     hybrid_alpha: float = 0.7
     
@@ -115,6 +107,17 @@ class Settings(BaseSettings):
     enable_input_guardrails: bool = True
     enable_output_guardrails: bool = True
     hallucination_threshold: float = 0.3
+    
+    # Context Management Configuration
+    context_timeout_hours: int = Field(default=1, env="CONTEXT_TIMEOUT_HOURS")
+    context_max_documents: int = Field(default=5, env="CONTEXT_MAX_DOCUMENTS")
+    context_boost_factor: float = Field(default=1.5, env="CONTEXT_BOOST_FACTOR")
+    enable_query_reformulation: bool = Field(default=True, env="ENABLE_QUERY_REFORMULATION")
+    enable_context_ui: bool = Field(default=True, env="ENABLE_CONTEXT_UI")
+    
+    # Enhanced Retrieval
+    max_conversation_history: int = Field(default=5, env="MAX_CONVERSATION_HISTORY")
+    document_scope_message_threshold: int = Field(default=5, env="DOCUMENT_SCOPE_MESSAGE_THRESHOLD")
     
     # Logging Configuration
     log_level: str = "INFO"
@@ -141,12 +144,10 @@ class Settings(BaseSettings):
         """Ensure critical secrets are not using placeholder values."""
         field_name = info.field_name
         
-        # Always require SECRET_KEY
         if field_name == "secret_key":
             if not v or len(v) < 20:
                 raise ValueError(f"{field_name} must be at least 20 characters long")
         
-        # For development, allow dummy API keys
         if field_name in ["gemini_api_key", "cohere_api_key"]:
             if not v or len(v) < 10:
                 raise ValueError(f"{field_name} cannot be empty")

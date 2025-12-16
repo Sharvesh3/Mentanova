@@ -19,16 +19,19 @@ class EmbeddingService:
     """
     
     def __init__(self):
-        # Configure Gemini
         genai.configure(api_key=settings.gemini_api_key)
         
         self.model_name = settings.gemini_embedding_model
         self.dimensions = settings.gemini_embedding_dimensions
         self.batch_size = 100
         
-        # Local fallback
         self.local_model = None
         self.use_local_fallback = False
+        
+        if not self.model_name.startswith('models/'):
+            logger.warning(f"Embedding model '{self.model_name}' should start with 'models/'")
+            self.model_name = f"models/{self.model_name}"
+            logger.info(f"Auto-corrected to: {self.model_name}")
         
         logger.info(f"Embedding service initialized: Gemini {self.model_name} ({self.dimensions}D)")
     
@@ -169,34 +172,61 @@ class EmbeddingService:
             if show_progress:
                 logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} texts) [Gemini]")
             
-            loop = asyncio.get_event_loop()
-            
-            # Process batch
-            result = await loop.run_in_executor(
-                None,
-                lambda: genai.embed_content(
-                    model=self.model_name,
-                    content=batch,
-                    task_type="retrieval_document"
-                )
-            )
-            
-            # Extract embeddings
-            if isinstance(result['embedding'][0], list):
-                # Multiple embeddings returned
-                batch_embeddings = [self._adjust_dimensions(emb) for emb in result['embedding']]
-            else:
-                # Single embedding for batch
-                batch_embeddings = [self._adjust_dimensions(result['embedding'])]
-            
-            all_embeddings.extend(batch_embeddings)
-            
-            # Small delay to avoid rate limits
-            await asyncio.sleep(0.1)
+            try:
+                loop = asyncio.get_event_loop()
+                
+                # Add timeout wrapper
+                async def embed_with_timeout():
+                    try:
+                        # Run blocking call in executor with timeout
+                        future = loop.run_in_executor(
+                            None,
+                            lambda: genai.embed_content(
+                                model=self.model_name,
+                                content=batch,
+                                task_type="retrieval_document"
+                            )
+                        )
+                        # Wait max 30 seconds
+                        return await asyncio.wait_for(future, timeout=30.0)
+                    except asyncio.TimeoutError:
+                        logger.error(f"Batch {batch_num} timed out after 30 seconds")
+                        raise
+                
+                result = await embed_with_timeout()
+                
+                # Extract embeddings
+                if isinstance(result['embedding'][0], list):
+                    # Multiple embeddings returned
+                    batch_embeddings = [self._adjust_dimensions(emb) for emb in result['embedding']]
+                else:
+                    # Single embedding for batch
+                    batch_embeddings = [self._adjust_dimensions(result['embedding'])]
+                
+                logger.info(f"✅ Batch {batch_num} completed: {len(batch_embeddings)} embeddings")
+                all_embeddings.extend(batch_embeddings)
+                
+                # Small delay to avoid rate limits
+                await asyncio.sleep(0.2)
+                
+            except asyncio.TimeoutError as e:
+                logger.error(f"Timeout in batch {batch_num}: {str(e)}")
+                logger.warning("Switching to local embeddings due to timeout")
+                self.use_local_fallback = True
+                return await self._generate_embeddings_batch_local(texts, show_progress)
+                
+            except Exception as e:
+                logger.error(f"Error in batch {batch_num}: {str(e)}")
+                error_str = str(e).lower()
+                if any(err in error_str for err in ['quota', 'rate limit', 'authentication', '429', '401', '403']):
+                    logger.warning(f"Gemini batch error, switching to local: {str(e)}")
+                    self.use_local_fallback = True
+                    return await self._generate_embeddings_batch_local(texts, show_progress)
+                raise
         
-        logger.info(f"Generated {len(all_embeddings)} Gemini embeddings successfully")
+        logger.info(f"✅ Generated {len(all_embeddings)} Gemini embeddings successfully")
         return all_embeddings
-    
+        
     async def _generate_embeddings_batch_local(
         self,
         texts: List[str],

@@ -1,4 +1,4 @@
-import { User, Bot } from 'lucide-react';
+import { User, Bot, Sparkles } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ChatMessage } from '../../services/api';
@@ -97,6 +97,16 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
           {/* Metadata for assistant messages */}
           {!isUser && message.metadata && (
             <div className="mt-3 pt-3 border-t border-gray-100">
+              {/* NEW: Query Reformulation Indicator */}
+              {message.metadata.reformulated_query && (
+                <div className="mb-2 text-xs text-gray-500 italic flex items-center gap-1">
+                  <Sparkles className="w-3 h-3" />
+                  <span>
+                    Interpreted as: "{message.metadata.reformulated_query}"
+                  </span>
+                </div>
+              )}
+              
               {message.metadata.confidence && (
                 <div className="flex items-center gap-2 text-xs">
                   <span className="text-gray-500">Confidence:</span>

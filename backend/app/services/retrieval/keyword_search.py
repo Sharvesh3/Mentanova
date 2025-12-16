@@ -26,10 +26,11 @@ class KeywordSearchService:
         db: AsyncSession,
         top_k: Optional[int] = None,
         doc_type: Optional[str] = None,
-        department: Optional[str] = None
+        department: Optional[str] = None,
+        document_filter: Optional[List[str]] = None  # NEW
     ) -> List[Dict[str, Any]]:
         """
-        Search chunks using keyword matching.
+        Search chunks using keyword matching with optional document filtering.
         
         Args:
             query: Search query string
@@ -37,15 +38,12 @@ class KeywordSearchService:
             top_k: Number of results
             doc_type: Filter by document type
             department: Filter by department
+            document_filter: List of document names to filter by (NEW)
             
         Returns:
             List of matching chunks with relevance scores
         """
         k = top_k or self.default_top_k
-        
-        # Prepare search query for PostgreSQL
-        # Replace spaces with & for AND operation
-        search_query = ' & '.join(query.split())
         
         # Build query using PostgreSQL full-text search
         query_stmt = (
@@ -73,6 +71,16 @@ class KeywordSearchService:
         if department:
             query_stmt = query_stmt.where(Document.department == department)
         
+        # NEW: Filter by document names
+        if document_filter:
+            from sqlalchemy import or_
+            doc_conditions = [
+                Document.filename.ilike(f'%{doc_name}%')
+                for doc_name in document_filter
+            ]
+            query_stmt = query_stmt.where(or_(*doc_conditions))
+            logger.info(f"  Keyword search filtering to: {document_filter}")
+        
         # Order by rank
         query_stmt = query_stmt.order_by(text('rank DESC')).limit(k)
         
@@ -86,6 +94,7 @@ class KeywordSearchService:
             chunk_dict = {
                 'chunk_id': str(chunk.id),
                 'document_id': str(document.id),
+                'document_name': document.filename,  # NEW: Add document name
                 'content': chunk.content,
                 'chunk_type': chunk.chunk_type,
                 'page_numbers': chunk.page_numbers,
@@ -93,7 +102,7 @@ class KeywordSearchService:
                 'token_count': chunk.token_count,
                 'keyword_score': float(rank),
                 'metadata': {
-                    **chunk.metadata,
+                    **chunk.chunk_metadata,
                     'document_title': document.filename,
                     'doc_type': document.doc_type,
                     'department': document.department,

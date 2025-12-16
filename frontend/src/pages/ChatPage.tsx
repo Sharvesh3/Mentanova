@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Send, Loader2, FileText, AlertCircle, Plus, Sparkles } from 'lucide-react';
+import { Send, Loader2, FileText, AlertCircle, Plus, Sparkles, BarChart3 } from 'lucide-react';
 import api, { ChatMessage, ChatResponse, Source } from '../services/api';
 import MessageBubble from '../components/chat/MessageBubble';
 import SourceCard from '../components/chat/SourceCard';
+import ContextIndicator from '../components/chat/ContextIndicator';
+import ExportButton from '../components/chat/ExportButton';
+import AnalyticsModal from '../components/chat/AnalyticsModal';
 
 export default function ChatPage() {
   const { conversationId } = useParams();
@@ -16,6 +19,9 @@ export default function ChatPage() {
   );
   const [sources, setSources] = useState<Source[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [contextSummary, setContextSummary] = useState<any>(null);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [showAnalytics, setShowAnalytics] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -38,6 +44,20 @@ export default function ChatPage() {
       inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 120)}px`;
     }
   }, [input]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      // Ctrl/Cmd + A to open analytics
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a' && currentConversationId) {
+        e.preventDefault();
+        setShowAnalytics(true);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [currentConversationId]);
 
   const loadConversation = async (convId: string) => {
     try {
@@ -84,11 +104,33 @@ export default function ChatPage() {
           sources: response.sources,
           confidence: response.confidence,
           citations: response.citations,
+          reformulated_query: response.metadata?.query_reformulated 
+            ? input.trim() 
+            : undefined,
         },
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
       setSources(response.sources);
+      
+      // Debug: Log the response
+      console.log('📊 Full API Response:', response);
+      console.log('💡 Suggestions received:', response.suggestions);
+      
+      // Update context summary
+      if (response.metadata?.context_summary) {
+        setContextSummary(response.metadata.context_summary);
+      }
+      
+      // Update suggestions (with fallback for undefined)
+      if (response.suggestions && Array.isArray(response.suggestions)) {
+        console.log('✅ Setting suggestions:', response.suggestions);
+        setSuggestions(response.suggestions);
+      } else {
+        console.log('⚠️ No suggestions in response');
+        setSuggestions([]);
+      }
+      
       setError(null);
 
     } catch (err: any) {
@@ -123,8 +165,19 @@ export default function ChatPage() {
     setCurrentConversationId(null);
     setSources([]);
     setError(null);
+    setContextSummary(null);
+    setSuggestions([]);
     navigate('/chat');
     inputRef.current?.focus();
+  };
+
+  const clearContext = () => {
+    setContextSummary(null);
+    setSuggestions([]);
+  };
+
+  const handleSuggestionClick = (suggestion: string) => {
+    setInput(suggestion);
   };
 
   const exampleQuestions = [
@@ -151,19 +204,50 @@ export default function ChatPage() {
               <p className="text-xs text-gray-500">AI-powered document assistant</p>
             </div>
           </div>
+          
           {messages.length > 0 && (
-            <button
-              onClick={startNewChat}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
-            >
-              <Plus className="w-4 h-4" />
-              New Chat
-            </button>
+            <div className="flex items-center gap-2">
+              {/* Analytics Button */}
+              {currentConversationId && (
+                <button
+                  onClick={() => setShowAnalytics(true)}
+                  className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-lg transition-colors"
+                  title="View analytics"
+                >
+                  <BarChart3 className="w-4 h-4" />
+                  <span className="hidden sm:inline">Analytics</span>
+                </button>
+              )}
+              
+              {/* Export Button */}
+              {currentConversationId && (
+                <ExportButton conversationId={currentConversationId} />
+              )}
+              
+              {/* New Chat Button */}
+              <button
+                onClick={startNewChat}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                New Chat
+              </button>
+            </div>
           )}
         </div>
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto">
+          {/* Context Indicator */}
+          {messages.length > 0 && contextSummary && (
+            <div className="sticky top-0 z-10 pt-4 bg-gray-50">
+              <ContextIndicator 
+                contextSummary={contextSummary} 
+                onClearContext={clearContext}
+              />
+            </div>
+          )}
+          
           <div className="max-w-4xl mx-auto px-6 py-8 space-y-6">
             {messages.length === 0 && (
               <div className="h-full flex items-center justify-center py-12">
@@ -219,6 +303,16 @@ export default function ChatPage() {
               </div>
             )}
 
+            {error && (
+              <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-lg">
+                <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-red-900">Error</p>
+                  <p className="text-sm text-red-700 mt-1">{error}</p>
+                </div>
+              </div>
+            )}
+
             <div ref={messagesEndRef} />
           </div>
         </div>
@@ -226,6 +320,48 @@ export default function ChatPage() {
         {/* Input */}
         <div className="border-t border-gray-200 bg-white p-4 shadow-lg">
           <div className="max-w-4xl mx-auto">
+            {/* Suggestions */}
+            {suggestions.length > 0 && messages.length > 0 && (
+              <div className="mb-3 animate-fadeIn">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-medium text-gray-600 flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-blue-500" />
+                    Suggested questions:
+                  </p>
+                  <button
+                    onClick={() => setSuggestions([])}
+                    className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {suggestions.map((suggestion, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => handleSuggestionClick(suggestion)}
+                      className="group px-3 py-2 text-sm text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 hover:border-blue-300 rounded-lg transition-all shadow-sm hover:shadow"
+                    >
+                      <span className="flex items-center gap-1">
+                        {suggestion}
+                        <Send className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" />
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Context hint */}
+            {contextSummary && contextSummary.primary_document && (
+              <div className="mb-2 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-md">
+                <p className="text-xs text-blue-700">
+                  <Sparkles className="w-3 h-3 inline mr-1" />
+                  I'll focus on <span className="font-medium">{contextSummary.primary_document}</span> for your next question
+                </p>
+              </div>
+            )}
+            
             <div className="flex items-end gap-2">
               <div className="flex-1 relative">
                 <textarea
@@ -245,7 +381,11 @@ export default function ChatPage() {
                 disabled={!input.trim() || loading}
                 className="px-4 py-3 bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-xl hover:from-blue-700 hover:to-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg disabled:shadow-none"
               >
-                <Send className="w-5 h-5" />
+                {loading ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <Send className="w-5 h-5" />
+                )}
               </button>
             </div>
             <p className="mt-2 text-xs text-gray-500 text-center">
@@ -263,6 +403,11 @@ export default function ChatPage() {
               <FileText className="w-4 h-4 text-blue-600" />
               Sources ({sources.length})
             </h3>
+            {contextSummary && contextSummary.primary_document && (
+              <p className="text-xs text-gray-500 mt-1">
+                Currently focusing on: <span className="font-medium">{contextSummary.primary_document}</span>
+              </p>
+            )}
           </div>
           <div className="p-4 space-y-2">
             {sources.map((source, index) => (
@@ -270,6 +415,15 @@ export default function ChatPage() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* Analytics Modal */}
+      {currentConversationId && (
+        <AnalyticsModal
+          conversationId={currentConversationId}
+          isOpen={showAnalytics}
+          onClose={() => setShowAnalytics(false)}
+        />
       )}
     </div>
   );

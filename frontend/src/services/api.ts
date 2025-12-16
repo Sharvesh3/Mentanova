@@ -11,7 +11,13 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp?: string;
-  metadata?: any;
+  metadata?: {
+    sources?: Source[];
+    confidence?: string;
+    citations?: any[];
+    error?: boolean;
+    reformulated_query?: string;
+  };
 }
 
 export interface ChatRequest {
@@ -36,7 +42,21 @@ export interface ChatResponse {
   citations: any[];
   confidence: string;
   status: string;
-  metadata: any;
+  suggestions?: string[];
+  metadata: {
+    chunks_used?: number;
+    tokens?: any;
+    searched_documents?: boolean;
+    retrieval_metadata?: any;
+    context_summary?: {
+      primary_document?: string;
+      active_documents?: string[];
+      recent_time_period?: string;
+      message_count?: number;
+      last_intent?: string;
+    };
+    query_reformulated?: boolean;
+  };
 }
 
 export interface Document {
@@ -242,6 +262,12 @@ class ApiService {
 
   async deleteConversation(conversationId: string): Promise<void> {
     await this.api.delete(`/chat/conversations/${conversationId}`);
+  }
+
+  // Get conversation analytics
+  async getConversationAnalytics(conversationId: string): Promise<any> {
+    const response = await this.api.get(`/chat/conversations/${conversationId}/analytics`);
+    return response.data;
   }
 
   // Document endpoints
@@ -540,6 +566,21 @@ class ApiService {
       
       throw new Error(errorMessage);
     }
+  }
+
+// Export conversation
+  async exportConversation(
+    conversationId: string,
+    format: 'markdown' | 'json' = 'markdown'
+  ): Promise<Blob | any> {
+    const response = await this.api.get(
+      `/chat/conversations/${conversationId}/export`,
+      {
+        params: { format },
+        responseType: format === 'markdown' ? 'blob' : 'json'
+      }
+    );
+    return response.data;
   }
 }
 

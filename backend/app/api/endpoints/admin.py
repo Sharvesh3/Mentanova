@@ -1,14 +1,15 @@
 """
 Admin API endpoints for user and system management.
 Only accessible by users with admin role.
+Includes context analytics and quality monitoring.
 """
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
 from pydantic import BaseModel, EmailStr, Field
-from datetime import datetime
+from datetime import datetime, timedelta
 from loguru import logger
 
 from app.db.session import get_db
@@ -554,6 +555,362 @@ async def list_all_documents(
         "total": total,
         "documents": doc_list
     }
+
+
+# ============================================================================
+# NEW: CONTEXT ANALYTICS & MONITORING ENDPOINTS
+# ============================================================================
+
+@router.get("/admin/analytics/context")
+async def get_context_analytics(
+    days: int = Query(7, ge=1, le=90),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """
+    Get context usage analytics.
+    
+    Admin only. Shows:
+    - Context hit rate
+    - Most referenced documents
+    - Query reformulation effectiveness
+    - Average conversation length
+    """
+    try:
+        from app.services.generation.context_manager import context_manager
+        
+        # Get all active contexts
+        contexts = context_manager.contexts
+        
+        # Calculate statistics
+        total_contexts = len(contexts)
+        contexts_with_docs = sum(1 for c in contexts.values() if c.primary_document)
+        
+        # Document reference frequency
+        doc_references = {}
+        for context in contexts.values():
+            for ref in context.document_references:
+                doc = ref['document']
+                doc_references[doc] = doc_references.get(doc, 0) + 1
+        
+        # Sort by frequency
+        top_documents = sorted(
+            doc_references.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:10]
+        
+        # Time period tracking
+        time_periods = []
+        for context in contexts.values():
+            time_periods.extend(context.time_periods)
+        
+        time_period_count = len(set(time_periods))
+        
+        # Calculate averages
+        avg_messages = sum(c.message_count for c in contexts.values()) / max(total_contexts, 1)
+        
+        # Entity tracking
+        all_entities = {}
+        for context in contexts.values():
+            for entity_type, values in context.entities.items():
+                if entity_type not in all_entities:
+                    all_entities[entity_type] = []
+                all_entities[entity_type].extend(values)
+        
+        entity_stats = {
+            entity_type: len(set(values))
+            for entity_type, values in all_entities.items()
+        }
+        
+        analytics = {
+            'total_active_contexts': total_contexts,
+            'contexts_with_document_scope': contexts_with_docs,
+            'document_scope_rate': round(contexts_with_docs / max(total_contexts, 1) * 100, 1),
+            'top_referenced_documents': [
+                {'document': doc, 'reference_count': count}
+                for doc, count in top_documents
+            ],
+            'unique_time_periods_tracked': time_period_count,
+            'average_messages_per_conversation': round(avg_messages, 1),
+            'entity_tracking': entity_stats,
+            'context_features': {
+                'query_reformulation': True,
+                'document_scoping': True,
+                'time_period_tracking': True,
+                'entity_extraction': True,
+            },
+            'performance': {
+                'avg_context_age_minutes': round(
+                    sum((datetime.utcnow() - c.created_at).seconds / 60 for c in contexts.values()) / max(total_contexts, 1),
+                    1
+                ) if total_contexts > 0 else 0
+            }
+        }
+        
+        return analytics
+        
+    except Exception as e:
+        logger.error(f"Error getting context analytics: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.get("/admin/analytics/retrieval")
+async def get_retrieval_analytics(
+    current_user: User = Depends(get_current_admin_user)
+):
+    """
+    Get retrieval performance analytics.
+    
+    Shows:
+    - Average retrieval time
+    - Hybrid vs semantic vs keyword usage
+    - Reranking impact
+    - Context-aware retrieval effectiveness
+    """
+    # This would ideally pull from a metrics database
+    # For now, return structure with placeholder data
+    
+    return {
+        'retrieval_strategies': {
+            'hybrid': {'count': 0, 'avg_time_ms': 150},
+            'semantic': {'count': 0, 'avg_time_ms': 120},
+            'keyword': {'count': 0, 'avg_time_ms': 80},
+        },
+        'context_aware_searches': {
+            'scoped': 0,
+            'global': 0,
+            'fallback_triggered': 0,
+        },
+        'reranking': {
+            'enabled': True,
+            'avg_score_improvement': 0.15,
+            'rerank_model': 'rerank-english-v3.0',
+        },
+        'performance': {
+            'avg_retrieval_time_ms': 150,
+            'p95_retrieval_time_ms': 300,
+            'p99_retrieval_time_ms': 500,
+        },
+        'quality_metrics': {
+            'avg_similarity_score': 0.75,
+            'avg_rerank_score': 0.82,
+            'documents_with_embeddings': 100,
+        }
+    }
+
+
+@router.get("/admin/conversations/quality")
+async def get_conversation_quality_metrics(
+    limit: int = Query(50, ge=10, le=200),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """
+    Get conversation quality metrics.
+    
+    Admin only. Shows:
+    - Low confidence responses
+    - Conversations with no sources
+    - Error rates
+    - User satisfaction indicators
+    """
+    try:
+        from app.services.generation.conversation_manager import conversation_manager
+        
+        all_conversations = conversation_manager.conversations
+        
+        # Analyze quality
+        low_confidence_count = 0
+        no_sources_count = 0
+        error_count = 0
+        total_responses = 0
+        
+        quality_issues = []
+        
+        for conv_id, conv in list(all_conversations.items())[:limit]:
+            messages = conv.get('messages', [])
+            
+            for msg in messages:
+                if msg['role'] == 'assistant':
+                    total_responses += 1
+                    metadata = msg.get('metadata', {})
+                    
+                    # Check confidence
+                    if metadata.get('confidence') == 'low':
+                        low_confidence_count += 1
+                        quality_issues.append({
+                            'conversation_id': conv_id,
+                            'issue': 'low_confidence',
+                            'message_preview': msg['content'][:100] + '...',
+                            'timestamp': msg.get('timestamp')
+                        })
+                    
+                    # Check sources
+                    if not metadata.get('sources'):
+                        no_sources_count += 1
+                    
+                    # Check errors
+                    if metadata.get('error'):
+                        error_count += 1
+                        quality_issues.append({
+                            'conversation_id': conv_id,
+                            'issue': 'error',
+                            'message_preview': msg['content'][:100] + '...',
+                            'timestamp': msg.get('timestamp')
+                        })
+        
+        # Calculate rates
+        low_conf_rate = (low_confidence_count / max(total_responses, 1)) * 100
+        no_sources_rate = (no_sources_count / max(total_responses, 1)) * 100
+        error_rate = (error_count / max(total_responses, 1)) * 100
+        
+        return {
+            'total_conversations_analyzed': min(limit, len(all_conversations)),
+            'total_responses': total_responses,
+            'quality_metrics': {
+                'low_confidence_responses': low_confidence_count,
+                'low_confidence_rate': round(low_conf_rate, 1),
+                'responses_without_sources': no_sources_count,
+                'no_sources_rate': round(no_sources_rate, 1),
+                'error_responses': error_count,
+                'error_rate': round(error_rate, 1),
+            },
+            'quality_issues': quality_issues[:20],
+            'recommendations': _generate_quality_recommendations(
+                low_confidence_count,
+                no_sources_count,
+                error_count
+            ),
+            'health_status': _calculate_health_status(low_conf_rate, error_rate)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting quality metrics: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.get("/admin/analytics/conversations")
+async def get_conversation_analytics(
+    days: int = Query(7, ge=1, le=90),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """
+    Get overall conversation analytics.
+    
+    Shows:
+    - Total conversations
+    - Average conversation length
+    - Popular topics
+    - Usage patterns
+    """
+    try:
+        from app.services.generation.conversation_manager import conversation_manager
+        from app.services.generation.context_manager import context_manager
+        
+        all_conversations = conversation_manager.conversations
+        
+        # Calculate metrics
+        total_conversations = len(all_conversations)
+        total_messages = sum(len(c.get('messages', [])) for c in all_conversations.values())
+        
+        # Average length
+        avg_length = total_messages / max(total_conversations, 1)
+        
+        # Collect topics from contexts
+        all_topics = []
+        for conv_id in all_conversations.keys():
+            context = context_manager.get_context(conv_id)
+            if context:
+                all_topics.extend(context.topics)
+        
+        # Count topic frequency
+        from collections import Counter
+        topic_counts = Counter(all_topics)
+        top_topics = topic_counts.most_common(10)
+        
+        # Time distribution (by hour)
+        hour_distribution = {}
+        for conv in all_conversations.values():
+            created = datetime.fromisoformat(conv['created_at'])
+            hour = created.hour
+            hour_distribution[hour] = hour_distribution.get(hour, 0) + 1
+        
+        return {
+            'period_days': days,
+            'total_conversations': total_conversations,
+            'total_messages': total_messages,
+            'average_conversation_length': round(avg_length, 1),
+            'top_topics': [
+                {'topic': topic, 'count': count}
+                for topic, count in top_topics
+            ],
+            'usage_by_hour': [
+                {'hour': hour, 'conversations': count}
+                for hour, count in sorted(hour_distribution.items())
+            ],
+            'active_conversations': sum(
+                1 for c in all_conversations.values()
+                if (datetime.utcnow() - datetime.fromisoformat(c['updated_at'])).seconds < 3600
+            )
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting conversation analytics: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+# Helper Functions
+
+def _generate_quality_recommendations(
+    low_conf: int,
+    no_sources: int,
+    errors: int
+) -> List[str]:
+    """Generate recommendations based on quality metrics."""
+    recommendations = []
+    
+    if low_conf > 10:
+        recommendations.append(
+            "High number of low-confidence responses detected. "
+            "Consider: 1) Improving document quality, 2) Adjusting similarity thresholds, "
+            "3) Adding more training documents"
+        )
+    
+    if no_sources > 20:
+        recommendations.append(
+            "Many responses without sources. This could indicate: "
+            "1) Too many conversational queries, 2) Documents not covering user questions, "
+            "3) Retrieval threshold too high"
+        )
+    
+    if errors > 5:
+        recommendations.append(
+            "Error rate is elevated. Check: 1) API quotas, 2) Database connections, "
+            "3) System logs for recurring issues"
+        )
+    
+    if not recommendations:
+        recommendations.append("System quality metrics are healthy!")
+    
+    return recommendations
+
+
+def _calculate_health_status(low_conf_rate: float, error_rate: float) -> str:
+    """Calculate overall system health status."""
+    if error_rate > 10 or low_conf_rate > 30:
+        return "critical"
+    elif error_rate > 5 or low_conf_rate > 20:
+        return "warning"
+    else:
+        return "healthy"
 
 
 __all__ = ['router']

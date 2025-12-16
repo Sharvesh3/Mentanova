@@ -67,7 +67,7 @@ class ConversationManager:
             conversation_id: Conversation ID
             role: Message role (user/assistant)
             content: Message content
-            metadata: Optional message metadata (sources, tokens, etc.)
+            metadata: Optional message metadata (sources, tokens, context, etc.)
             
         Returns:
             Message object
@@ -87,9 +87,19 @@ class ConversationManager:
         conversation['messages'].append(message)
         conversation['updated_at'] = datetime.utcnow().isoformat()
         
+        # NEW: Update conversation context from message metadata
+        if metadata and 'context_used' in metadata:
+            context_data = metadata['context_used']
+            # Store latest context in conversation
+            if 'primary_document' in context_data:
+                conversation['context']['primary_document'] = context_data['primary_document']
+            if 'active_documents' in context_data:
+                conversation['context']['active_documents'] = context_data['active_documents']
+            if 'recent_time_period' in context_data:
+                conversation['context']['recent_time_period'] = context_data['recent_time_period']
+        
         # Trim history if too long
         if len(conversation['messages']) > self.max_history_length * 2:
-            # Keep first message (usually greeting) + recent messages
             conversation['messages'] = (
                 conversation['messages'][:1] + 
                 conversation['messages'][-(self.max_history_length * 2 - 1):]

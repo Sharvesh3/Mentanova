@@ -11,6 +11,11 @@ from app.services.retrieval.query_processor import query_processor
 from app.services.retrieval.hybrid_search import hybrid_search_service
 from app.services.retrieval.reranker import reranking_service
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.services.generation.context_manager import ConversationContext
+
 
 class RetrievalPipeline:
     """
@@ -29,10 +34,11 @@ class RetrievalPipeline:
         top_k: Optional[int] = None,
         doc_type: Optional[str] = None,
         department: Optional[str] = None,
-        include_context: bool = True
+        include_context: bool = True,
+        conversation_context: Optional['ConversationContext'] = None  # NEW
     ) -> Dict[str, Any]:
         """
-        Complete retrieval pipeline.
+        Complete retrieval pipeline with conversation context awareness.
         
         Args:
             query: User's search query
@@ -41,6 +47,7 @@ class RetrievalPipeline:
             doc_type: Filter by document type
             department: Filter by department
             include_context: Whether to expand with neighboring chunks
+            conversation_context: Conversation context for document scoping
             
         Returns:
             Dictionary with retrieved chunks and metadata
@@ -53,9 +60,25 @@ class RetrievalPipeline:
         
         logger.info(f"  Intent: {processed_query['intent']}")
         logger.info(f"  Complexity: {processed_query['complexity']}")
-        logger.info(f"  Entities: {processed_query['entities']}")
         
-        # Step 2: Determine search strategy
+        # Step 2: Apply conversation context filtering
+        document_filter = None
+        boost_documents = []
+        
+        if conversation_context:
+            logger.info("Step 2: Applying conversation context...")
+            
+            # Get document filter if we should scope
+            if conversation_context.should_use_document_scope():
+                document_filter = conversation_context.get_document_filter()
+                logger.info(f"  📄 Document scope: {document_filter}")
+            
+            # Get documents to boost in ranking
+            if conversation_context.primary_document:
+                boost_documents = [conversation_context.primary_document]
+                logger.info(f"  ⬆️ Boosting: {boost_documents}")
+        
+        # Step 3: Determine search strategy
         use_semantic = True
         use_keyword = True
         
@@ -68,15 +91,17 @@ class RetrievalPipeline:
         else:
             logger.info("  Strategy: Hybrid (semantic + keyword)")
         
-        # Step 3: Hybrid search
-        logger.info("Step 2: Performing hybrid search...")
+        # Step 4: Hybrid search with context
+        logger.info("Step 3: Performing hybrid search...")
         
         if include_context:
             search_results = await hybrid_search_service.search_with_context_expansion(
                 query=query,
                 db=db,
                 top_k=top_k or settings.retrieval_top_k,
-                expand_neighbors=True
+                expand_neighbors=True,
+                document_filter=document_filter, 
+                boost_documents=boost_documents
             )
         else:
             search_results = await hybrid_search_service.search(
@@ -86,29 +111,30 @@ class RetrievalPipeline:
                 use_semantic=use_semantic,
                 use_keyword=use_keyword,
                 doc_type=doc_type,
-                department=department
+                department=department,
+                document_filter=document_filter,
+                boost_documents=boost_documents   
             )
         
         logger.info(f"  Retrieved {len(search_results)} chunks")
         
-        # Step 4: Rerank results
+        # Step 5: Rerank results
         if self.rerank_enabled and len(search_results) > 1:
-            logger.info("Step 3: Reranking results...")
+            logger.info("Step 4: Reranking results...")
             reranked_results = await reranking_service.rerank(
                 query=query,
                 chunks=search_results,
                 top_n=top_k or settings.rerank_top_k
             )
             
-            # Calculate statistics
             stats = reranking_service.calculate_score_statistics(reranked_results)
             logger.info(f"  Rerank scores: min={stats['min_score']:.3f}, max={stats['max_score']:.3f}, avg={stats['avg_score']:.3f}")
         else:
-            logger.info("Step 3: Skipping reranking")
+            logger.info("Step 4: Skipping reranking")
             reranked_results = search_results[:top_k or settings.rerank_top_k]
         
-        # Step 5: Assemble final context
-        logger.info("Step 4: Assembling context...")
+        # Step 6: Assemble final context
+        logger.info("Step 5: Assembling context...")
         final_context = self._assemble_context(
             chunks=reranked_results,
             processed_query=processed_query
@@ -129,7 +155,10 @@ class RetrievalPipeline:
                 'after_reranking': len(reranked_results),
                 'final_chunks': len(final_context['chunks']),
                 'intent': processed_query['intent'],
-                'complexity': processed_query['complexity']
+                'complexity': processed_query['complexity'],
+                'document_scoped': document_filter is not None,
+                'scoped_to': document_filter if document_filter else None,
+                'boosted_documents': boost_documents
             }
         }
     
@@ -170,6 +199,14 @@ class RetrievalPipeline:
                     except Exception as e:
                         logger.debug(f"Could not extract keys from metadata: {e}")
                         pass
+        
+        # Fallback: Extract from chunk itself if metadata is empty
+        if not metadata:
+            metadata = {
+                'document_title': chunk.get('document_name') or chunk.get('filename', 'Unknown'),
+                'doc_type': chunk.get('doc_type'),
+                'department': chunk.get('department'),
+            }
         
         return metadata
     
