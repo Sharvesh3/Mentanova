@@ -3,7 +3,7 @@
  */
 import axios, { AxiosInstance } from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? '';
 const API_VERSION = '/api/v1';
 
 // Types
@@ -109,40 +109,6 @@ export interface SystemStats {
   storage_used_mb: number;
 }
 
-export interface TokenStats {
-  conversation_id: string;
-  summary: {
-    total_messages: number;
-    total_tokens: number;
-    cached_tokens: number;
-    prompt_tokens: number;
-    completion_tokens: number;
-    cache_efficiency_percent: number;
-    total_cost_usd: number;
-    avg_tokens_per_message: number;
-    avg_cost_per_message: number;
-  };
-  messages: MessageTokenStat[];
-  pricing_info: {
-    model: string;
-    cached_token_price: number;
-    regular_token_price: number;
-    currency: string;
-  };
-}
-
-export interface MessageTokenStat {
-  message_id: string;
-  timestamp: string;
-  tokens: {
-    total: number;
-    cached: number;
-    prompt: number;
-    completion: number;
-  };
-  cost_usd: number;
-}
-
 export interface ChunkData {
   id: string;
   document_id: string;
@@ -205,9 +171,10 @@ class ApiService {
       headers: {
         'Content-Type': 'application/json',
       },
-      timeout: 60000,
+      timeout: 60000, // 60 seconds
     });
 
+    // Request interceptor for adding auth tokens
     this.api.interceptors.request.use(
       (config) => {
         const token = localStorage.getItem('access_token');
@@ -219,13 +186,15 @@ class ApiService {
       (error) => Promise.reject(error)
     );
 
+    // Response interceptor for error handling and token refresh
     this.api.interceptors.response.use(
       (response) => response,
       async (error) => {
         const originalRequest = error.config;
 
+        // Log detailed validation errors
         if (error.response?.status === 422) {
-          console.error('Validation Error (422):', {
+          console.error('❌ Validation Error (422):', {
             url: originalRequest.url,
             method: originalRequest.method,
             data: originalRequest.data,
@@ -233,6 +202,7 @@ class ApiService {
           });
         }
 
+        // If 401 and we haven't tried to refresh yet
         if (error.response?.status === 401 && !originalRequest._retry) {
           originalRequest._retry = true;
 
@@ -247,10 +217,12 @@ class ApiService {
               const { access_token } = response.data;
               localStorage.setItem('access_token', access_token);
 
+              // Retry original request with new token
               originalRequest.headers.Authorization = `Bearer ${access_token}`;
               return this.api(originalRequest);
             }
           } catch (refreshError) {
+            // Refresh failed, clear tokens and redirect to login
             localStorage.removeItem('access_token');
             localStorage.removeItem('refresh_token');
             window.location.href = '/login';
@@ -264,11 +236,13 @@ class ApiService {
     );
   }
 
+  // Health check
   async healthCheck() {
     const response = await this.api.get('/health');
     return response.data;
   }
 
+  // Chat endpoints
   async sendChatMessage(request: ChatRequest): Promise<ChatResponse> {
     const response = await this.api.post('/chat', request);
     return response.data;
@@ -290,16 +264,13 @@ class ApiService {
     await this.api.delete(`/chat/conversations/${conversationId}`);
   }
 
+  // Get conversation analytics
   async getConversationAnalytics(conversationId: string): Promise<any> {
     const response = await this.api.get(`/chat/conversations/${conversationId}/analytics`);
     return response.data;
   }
 
-  async getConversationTokenStats(conversationId: string): Promise<TokenStats> {
-    const response = await this.api.get(`/chat/conversations/${conversationId}/token-stats`);
-    return response.data;
-  }
-
+  // Document endpoints
   async uploadDocument(
     file: File,
     docType: string,
@@ -340,6 +311,7 @@ class ApiService {
     await this.api.delete(`/documents/${documentId}`);
   }
 
+  // Search endpoints
   async search(query: string, topK: number = 5, docType?: string) {
     const response = await this.api.post('/search', null, {
       params: { query, top_k: topK, doc_type: docType },
@@ -347,6 +319,7 @@ class ApiService {
     return response.data;
   }
 
+  // Authentication endpoints
   async register(
     email: string,
     username: string,
@@ -354,7 +327,7 @@ class ApiService {
     fullName?: string
   ): Promise<any> {
     try {
-      console.log('Registration attempt:', { email, username });
+      console.log('📝 Registration attempt:', { email, username });
       
       const response = await this.api.post('/auth/register', {
         email,
@@ -363,12 +336,12 @@ class ApiService {
         full_name: fullName,
       });
       
-      console.log('Registration successful');
+      console.log('✅ Registration successful');
       return response.data;
       
     } catch (error: any) {
       if (error.response?.status === 422) {
-        console.error('Registration validation failed');
+        console.error('❌ Registration validation failed');
         this.handleValidationError(error);
       }
       throw error;
@@ -377,18 +350,18 @@ class ApiService {
 
   async login(email: string, password: string): Promise<any> {
     try {
-      console.log('Login attempt:', { 
+      console.log('🔐 Login attempt:', { 
         email, 
         passwordLength: password.length,
         requestPayload: { email, password: '***' }
       });
       
       const response = await this.api.post('/auth/login', {
-        email: email,
+        email: email,      // ✅ Backend expects 'email' field
         password: password,
       });
       
-      console.log('Login successful:', {
+      console.log('✅ Login successful:', {
         hasAccessToken: !!response.data.access_token,
         hasRefreshToken: !!response.data.refresh_token,
         user: response.data.user?.email,
@@ -397,7 +370,7 @@ class ApiService {
       return response.data;
       
     } catch (error: any) {
-      console.error('Login failed:', {
+      console.error('❌ Login failed:', {
         status: error.response?.status,
         statusText: error.response?.statusText,
         data: error.response?.data,
@@ -442,6 +415,7 @@ class ApiService {
     });
   }
 
+  // Admin endpoints
   async getUsers(params?: {
     skip?: number;
     limit?: number;
@@ -514,6 +488,7 @@ class ApiService {
     return response.data;
   }
 
+  // Document Editor Endpoints
   async getDocumentInfo(documentId: string): Promise<DocumentInfo> {
     const response = await this.api.get(`/documents/${documentId}/info`);
     return response.data;
@@ -572,6 +547,28 @@ class ApiService {
     return response.data;
   }
 
+  // ✅ NEW: Helper method to format validation errors
+  private handleValidationError(error: any): void {
+    const validationErrors = error.response?.data?.detail;
+    
+    if (Array.isArray(validationErrors)) {
+      console.error('Validation errors:');
+      validationErrors.forEach((err: any, index: number) => {
+        console.error(`  ${index + 1}. Field: ${err.loc?.join('.')}`);
+        console.error(`     Error: ${err.msg}`);
+        console.error(`     Input: ${err.input}`);
+      });
+      
+      // Create user-friendly error message
+      const errorMessage = validationErrors
+        .map((err: any) => `${err.loc?.join('.')}: ${err.msg}`)
+        .join('; ');
+      
+      throw new Error(errorMessage);
+    }
+  }
+
+// Export conversation
   async exportConversation(
     conversationId: string,
     format: 'markdown' | 'json' = 'markdown'
@@ -585,26 +582,8 @@ class ApiService {
     );
     return response.data;
   }
-
-  private handleValidationError(error: any): void {
-    const validationErrors = error.response?.data?.detail;
-    
-    if (Array.isArray(validationErrors)) {
-      console.error('Validation errors:');
-      validationErrors.forEach((err: any, index: number) => {
-        console.error(`  ${index + 1}. Field: ${err.loc?.join('.')}`);
-        console.error(`     Error: ${err.msg}`);
-        console.error(`     Input: ${err.input}`);
-      });
-      
-      const errorMessage = validationErrors
-        .map((err: any) => `${err.loc?.join('.')}: ${err.msg}`)
-        .join('; ');
-      
-      throw new Error(errorMessage);
-    }
-  }
 }
 
+// Export singleton instance
 export const api = new ApiService();
 export default api;
