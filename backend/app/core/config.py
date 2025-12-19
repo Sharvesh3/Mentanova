@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     gemini_api_key: str
     gemini_embedding_model: str = "models/text-embedding-004"  
     gemini_embedding_dimensions: int = 1536 
-    gemini_chat_model: str = "gemini-2.5-flash" 
+    gemini_chat_model: str = "gemini-1.5-pro" 
     gemini_max_tokens: int = 8192
     
     # Cohere Configuration
@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     # Generation Configuration
     max_context_tokens: int = 12000
     temperature: float = 0.1
-    max_response_tokens: int = 2000
+    max_response_tokens: int = 1000
     
     # Guardrails Configuration
     enable_input_guardrails: bool = True
@@ -115,7 +115,7 @@ class Settings(BaseSettings):
     enable_context_ui: bool = Field(default=True, env="ENABLE_CONTEXT_UI")
     
     # Enhanced Retrieval
-    max_conversation_history: int = Field(default=2, env="MAX_CONVERSATION_HISTORY")
+    max_conversation_history: int = Field(default=5, env="MAX_CONVERSATION_HISTORY")
     document_scope_message_threshold: int = Field(default=5, env="DOCUMENT_SCOPE_MESSAGE_THRESHOLD")
     
     # Logging Configuration
