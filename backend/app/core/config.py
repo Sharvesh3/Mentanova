@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     gemini_api_key: str
     gemini_embedding_model: str = "models/text-embedding-004"  
     gemini_embedding_dimensions: int = 1536 
-    gemini_chat_model: str = "gemini-1.5-flash-002" 
+    gemini_chat_model: str = "gemini-2.5-flash" 
     gemini_max_tokens: int = 8192
     
     # Cohere Configuration

@@ -725,7 +725,7 @@ async def get_conversation_token_stats(
             },
             'messages': message_stats,
             'pricing_info': {
-                'model': 'gemini-1.5-flash',
+                'model': 'gemini-2.5-flash',
                 'cached_token_price': 0.00000003,
                 'regular_token_price': 0.0000003,
                 'currency': 'USD'
